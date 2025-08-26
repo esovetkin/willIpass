@@ -1,5 +1,7 @@
 # willIpass: using EM algorithm for exam scores confidence intervals
 
+Try it out in [shinyapps.io](https://esovetkin.shinyapps.io/willipass/).
+
 Imagine you need to take a test. It consists of 30 questions, and mistakes in each question may cost 2, 3, 4, or 5 points (wie bei der theoretischen Führerscheinprüfung in Deutschland). And if you collect 10 or more fail points, you do not pass the test.
 
 Say you practice your test several times, and you have collected some statistics on how many points you get.

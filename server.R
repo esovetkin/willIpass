@@ -1,3 +1,24 @@
+require(ggplot2)
+require(memoise)
+require(scales)
+require(shiny)
+
+
+expand_around_one <- trans_new(
+  name = "expand1",
+  transform = function(x) sign(x - 1) * sqrt(abs(x - 1)) + 1,
+  inverse   = function(y) sign(y - 1) * (abs(y - 1))^2 + 1,
+  domain    = c(0, Inf),
+  breaks = function(x) {
+    t <- function(x) sign(x - 1) * sqrt(abs(x - 1)) + 1
+    inv <- function(y) sign(y - 1) * (abs(y - 1))^2 + 1
+    tx <- range(t(x), na.rm = TRUE)
+    tb <- pretty(tx, n = 11)
+    inv(tb)
+  }
+)
+
+
 arrangements <- function(N, K)
 {
   res <- list()
@@ -36,6 +57,7 @@ chi_generator <- function(maxscore = 15, scores = c(0,2,3,4,5), N = 30)
 
     res[order(res[,1]),,drop=FALSE]
 }
+chi_generator <- memoise(chi_generator)
 
 
 alpha <- function(p0, data, chi_table)
@@ -110,7 +132,7 @@ do_once <- function(i, counts, chi, maxpass, possible_scores, Nquestions)
 points_cdf <- function(counts, possible_scores = c(0,2,3,4,5), Nquestions = 30, maxpass = 10, nsim=1e3, alpha = 0.05)
 {
     require(parallel, quietly=TRUE)
-    chi <- chi_generator(max(as.numeric(names(counts)), maxpass), possible_scores, Nquestions)
+    chi <- chi_generator(max(as.numeric(names(counts)), maxpass, 20), possible_scores, Nquestions)
 
     res <- mclapply(1:nsim, FUN=do_once,
                     counts = counts,
@@ -131,88 +153,71 @@ points_cdf <- function(counts, possible_scores = c(0,2,3,4,5), Nquestions = 30, 
     res
 }
 
-###
-
-require(ggplot2)
-require(scales)
-
-expand_around_one <- trans_new(
-  name = "expand1",
-  transform = function(x) sign(x - 1) * sqrt(abs(x - 1)) + 1,
-  inverse   = function(y) sign(y - 1) * (abs(y - 1))^2 + 1,
-  domain    = c(0, Inf),
-  breaks = function(x) {
-    t <- function(x) sign(x - 1) * sqrt(abs(x - 1)) + 1
-    inv <- function(y) sign(y - 1) * (abs(y - 1))^2 + 1
-    tx <- range(t(x), na.rm = TRUE)
-    tb <- pretty(tx, n = 20)
-    inv(tb)
-  }
-)
 
 
-png("cdf.png", width=2000, height=1700, res=300)
-d <- points_cdf(table(c(3,0,7,3,2,0)))
-print(round(d["10",],2))
-print(round(points_cdf(table(c(7,5,8,9,5,6)))["10",],2))
-ggplot(d, aes(ymin=lower,ymax=upper,y=median,x=x)) +
-    geom_line() +
-    geom_errorbar(lty=2) +
-    scale_y_continuous(trans=expand_around_one) +
-    scale_x_continuous(breaks=unique(d$x)) +
-    xlab("points") + ylab("cdf")
-dev.off()
+server <- function(input, output, session) {
 
+    observeEvent(input$numbers_from_cookie, {
+        updateTextInput(session, "numbers", value = input$numbers_from_cookie)
+    }, ignoreInit = TRUE)
 
-## prüfung simulation points
-scores <- c(3,0,7,3,9,0,6,0,5,0,
-            2,3,0,0,3,0,0,3,0,0,
-            2,9,6,0,0,0,0,3,0,0,
-            8,0,0,2,0,5,3,0,0,0,
-            0,12,3,0,0,0,2,0,4,2,
-            0,0,4,0,0,0,0,3,2,0,
-            3,0,6,3,0,0,4,3,0,3,
-            0,0,0,4,0,0,0,0,4,0,
-            0,0,5,0,0,3,0,0,0,0,
-            0,0,0,0,0,0,0,0,0)
-length(scores)
+    observeEvent(input$numbers, {
+        session$sendCustomMessage("saveCookie", input$numbers %||% "")
+    }, ignoreInit = FALSE)
 
-pdf("willIpass.pdf", width=10, height=8)
-d <- points_cdf(table(scores), nsim=1e4)
-d_last <- points_cdf(table(tail(scores, 20)), nsim=1e4)
-print(paste("Probability of failing (%):",paste(round(100*(1-d["10",c(3,1)]),2), collapse=", ")))
-print(paste("Probability of getting 0 (%):",paste(round(100*(d["0",c(3,1)]),2), collapse=", ")))
-print(paste("Probability of failing, last 20 days (%):",paste(round(100*(1-d_last["10",c(3,1)]),2), collapse=", ")))
-print(paste("Probability of getting 0, last 20 days (%):",paste(round(100*(d_last["0",c(3,1)]),2), collapse=", ")))
-ggplot(d, aes(ymin=lower,ymax=upper,y=median,x=x)) +
-    geom_line() +
-    geom_errorbar(lty=2) +
-    scale_y_continuous(trans=expand_around_one) +
-    scale_x_continuous(breaks=unique(d$x)) +
-    xlab("points") + ylab("cdf")
+    parse_ints <- function(s) {
+        if (!nzchar(s)) {
+            return(list(vals = integer(0), bad = character(0)))
+        }
+        toks <- unlist(strsplit(s, "[,; ]+"))
+        toks <- toks[nzchar(toks)]
+        vals <- as.integer(toks)
+        is_bad <- is.na(vals) | vals < 0 | vals == 1 | vals > 40
+        list(vals = vals[!is_bad], bad = toks[is_bad])
+    }
 
-K <- 40
-N <- length(scores)%/% K
-res <- list()
-for (i in 0:(N-1)) {
-    x <- cbind(points_cdf(table(scores[(i*K + 1):(i*K + K)])), "attempt"=paste0(i+1,"th ", K))
-    x$x <- x$x + i*0.5/N
-    res <- c(res, list(x))
+    vec <- eventReactive(input$compute, {
+        x <- parse_ints(input$numbers)
+        x$probs <- points_cdf(table(x$vals), nsim=200, alpha=0.1)
+        x
+    }, ignoreInit = FALSE)
+
+    output$parse_notes <- renderUI({
+        pr <- vec()
+        if (length(pr$bad) > 0) {
+            HTML(paste0(
+                "<span style='color:#b33;'>Nicht ganzzahlige Token wurde ignoriert: ",
+                paste(htmltools::htmlEscape(unique(pr$bad)), collapse = ", "),
+                "</span>"
+            ))
+        } else {
+            HTML("<span style='color:#3a3;'>Alle Token werden als Ganzzahlen prozessiert.</span>")
+        }
+    })
+
+    output$summary <- renderText({
+        pr <- vec()
+        x  <- pr$vals
+        d <- pr$probs
+        if (length(x) == 0) {
+            return("Noch keine Ganzzahlen. Geben Sie Werte ein und klicken Sie auf 'Berechnen'")
+        }
+        
+        paste0("Wahrscheinlichkeit, den Test nicht zu bestehen (%, 90%-Konfidenzintervall): [",
+               paste(round(100*(1-d["10",c(3,1)]),2), collapse=", "),"]")
+    })
+
+    output$freq_plot <- renderPlot({
+        pr <- vec()
+        x  <- pr$vals
+        validate(need(length(x) > 0, "Noch nichts zum Plotten. Geben Sie Ganzzahlen ein und klicken Sie auf 'Berechnen'"))
+
+        d <- pr$probs
+        ggplot(d, aes(ymin=lower,ymax=upper,y=median,x=x)) +
+            geom_line() +
+            geom_errorbar(lty=2) +
+            scale_y_continuous(trans=expand_around_one) +
+            scale_x_continuous(breaks=unique(d$x)) +
+            xlab("Anzahl der Fehlerpunkte") + ylab("Wahrscheinlichkeit zu bestehen")
+    })
 }
-
-if (length(scores)-N*K > 3) {
-    x <- cbind(points_cdf(table(scores[(N*K + 1):length(scores)])), "attempt"=paste0("last ", length(scores)-N*K))
-    x$x <- x$x + 0.5
-    res <- c(res, list(x))
-}
-
-res <- do.call(rbind, res)
-ggplot(res, aes(ymin=lower,ymax=upper,y=median, x=x, color=attempt)) +
-    geom_line() +
-    geom_errorbar(lty=2) +
-    scale_y_continuous(trans=expand_around_one) +
-    scale_x_continuous(breaks=unique(res[res$attempt == paste("1th", K),"x"])) +
-    xlab("points") + ylab("cdf")
-dev.off()
-
-Hmisc::binconf(sum(scores<=10), length(scores))
